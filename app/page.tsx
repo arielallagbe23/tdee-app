@@ -166,10 +166,10 @@ export default function Home() {
           createdAt: serverTimestamp(),
         });
       }
-    } catch (err: any) {
-      setError(err?.message || "Impossible de calculer.");
-    } finally {
-      setLoading(false);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Impossible de calculer.";
+      setError(message);
     }
   }
 
