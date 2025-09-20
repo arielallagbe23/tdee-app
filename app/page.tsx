@@ -148,7 +148,8 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Erreur inconnue");
 
-      setResult(data as CalcResponse);
+      const calc = data as CalcResponse;
+      setResult(calc);
 
       if (form.save && FIREBASE_AVAILABLE && db) {
         const user = await ensureAnonAuth();
@@ -157,12 +158,9 @@ export default function Home() {
           uid: user.uid,
           ...payload,
           deficit,
-          bmr: (data as CalcResponse).bmr,
-          tdee: (data as CalcResponse).tdee,
-          target: Math.max(
-            0,
-            Math.round((data as CalcResponse).tdee - deficit)
-          ),
+          bmr: calc.bmr,
+          tdee: calc.tdee,
+          target: Math.max(0, Math.round(calc.tdee - deficit)),
           createdAt: serverTimestamp(),
         });
       }
@@ -170,6 +168,8 @@ export default function Home() {
       const message =
         err instanceof Error ? err.message : "Impossible de calculer.";
       setError(message);
+    } finally {
+      setLoading(false); // ✅ indispensable pour arrêter le spinner
     }
   }
 
@@ -342,21 +342,6 @@ export default function Home() {
             </button>
             {copied && <span className="text-sky-300">Lien copié ✅</span>}
           </div>
-
-          {/* (Optionnel) Enregistrement Firestore */}
-          {FIREBASE_AVAILABLE && (
-            <label className="flex items-center gap-3 select-none">
-              <input
-                type="checkbox"
-                className="h-5 w-5 accent-sky-500"
-                checked={form.save}
-                onChange={(e) => onChange("save", e.target.checked)}
-              />
-              <span className="text-sm text-slate-300">
-                Enregistrer aussi dans Firestore
-              </span>
-            </label>
-          )}
 
           {/* CTA sticky mobile */}
           <div className="sticky bottom-[env(safe-area-inset-bottom)] z-10">
