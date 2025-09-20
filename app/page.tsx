@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
-import { db, ensureAnonAuth } from "./lib/firebaseClient";
+import { db, ensureAnonAuth, FIREBASE_AVAILABLE } from "./lib/firebaseClient";
 
 type Gender = "male" | "female";
 type Activity = "sedentary" | "light" | "moderate" | "intense" | "very_intense";
@@ -150,7 +150,7 @@ export default function Home() {
 
       setResult(data as CalcResponse);
 
-      if (form.save) {
+      if (form.save && FIREBASE_AVAILABLE && db) {
         const user = await ensureAnonAuth();
         const deficit = Math.max(0, Math.min(2000, Number(form.deficit || 0)));
         await addDoc(collection(db, "tdee_results"), {
@@ -344,17 +344,19 @@ export default function Home() {
           </div>
 
           {/* (Optionnel) Enregistrement Firestore */}
-          <label className="flex items-center gap-3 select-none">
-            <input
-              type="checkbox"
-              className="h-5 w-5 accent-sky-500"
-              checked={form.save}
-              onChange={(e) => onChange("save", e.target.checked)}
-            />
-            <span className="text-sm text-slate-300">
-              Enregistrer aussi dans Firestore
-            </span>
-          </label>
+          {FIREBASE_AVAILABLE && (
+            <label className="flex items-center gap-3 select-none">
+              <input
+                type="checkbox"
+                className="h-5 w-5 accent-sky-500"
+                checked={form.save}
+                onChange={(e) => onChange("save", e.target.checked)}
+              />
+              <span className="text-sm text-slate-300">
+                Enregistrer aussi dans Firestore
+              </span>
+            </label>
+          )}
 
           {/* CTA sticky mobile */}
           <div className="sticky bottom-[env(safe-area-inset-bottom)] z-10">
