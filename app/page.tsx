@@ -15,6 +15,9 @@ type FormState = {
   activity: Activity;
   save: boolean;
   deficit: string; // kcal/j
+  mode: "deficit" | "goal";
+  goalKg: string;
+  goalDate: string; // yyyy-mm-dd
 };
 
 type CalcResponse = { bmr: number; tdee: number };
@@ -37,6 +40,9 @@ const DEFAULT_FORM: FormState = {
   activity: "sedentary",
   save: false,
   deficit: "750",
+  mode: "deficit",
+  goalKg: "",
+  goalDate: "",
 };
 
 export default function Home() {
@@ -58,12 +64,16 @@ export default function Home() {
     if (f.weight) p.set("w", f.weight);
     p.set("act", f.activity);
     if (f.deficit) p.set("d", f.deficit);
+    if (f.mode) p.set("m", f.mode);
+    if (f.goalKg) p.set("kg", f.goalKg);
+    if (f.goalDate) p.set("by", f.goalDate);
     return p.toString();
   }
   function queryToForm(qs: string): Partial<FormState> {
     const q = new URLSearchParams(qs);
     const g = q.get("g") as Gender | null;
     const act = q.get("act") as Activity | null;
+    const m = q.get("m") as FormState["mode"] | null;
     return {
       gender: g === "male" || g === "female" ? g : undefined,
       age: q.get("age") ?? undefined,
@@ -81,6 +91,9 @@ export default function Home() {
         ? (act as Activity)
         : undefined,
       deficit: q.get("d") ?? undefined,
+      mode: m === "deficit" || m === "goal" ? m : undefined,
+      goalKg: q.get("kg") ?? undefined,
+      goalDate: q.get("by") ?? undefined,
     };
   }
   async function copyShareLink() {
@@ -98,11 +111,34 @@ export default function Home() {
     }
   }
 
+  const goalPlan = useMemo(() => {
+    if (!result) return null;
+    if (!form.goalKg || !form.goalDate) return null;
+    const kg = Number(form.goalKg);
+    const target = new Date(form.goalDate);
+    const now = new Date();
+    if (isNaN(kg) || kg <= 0 || isNaN(target.getTime())) return null;
+    const days = Math.ceil(
+      (target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (days <= 0) return null;
+    const dailyDeficit = Math.round((kg * 7700) / days);
+    const calories = Math.max(0, Math.round(result.tdee - dailyDeficit));
+    return { days, dailyDeficit, calories };
+  }, [result, form.goalKg, form.goalDate]);
+
   const targetCalories = useMemo(() => {
     if (!result) return null;
-    const d = Math.max(0, Math.min(2000, Number(form.deficit || 0)));
-    return Math.max(0, Math.round(result.tdee - d));
-  }, [result, form.deficit]);
+    if (form.mode === "deficit") {
+      const d = Math.max(0, Math.min(2000, Number(form.deficit || 0)));
+      return Math.max(0, Math.round(result.tdee - d));
+    }
+    if (form.mode === "goal") {
+      if (!goalPlan) return null;
+      return Math.max(0, Math.round(result.tdee - goalPlan.dailyDeficit));
+    }
+    return null;
+  }, [result, form.deficit, form.mode, goalPlan]);
 
   function validate(): string | null {
     const age = Number(form.age);
@@ -113,8 +149,19 @@ export default function Home() {
     if (age < 10 || age > 100) return "Âge incohérent (10–100).";
     if (height < 120 || height > 230) return "Taille incohérente (120–230 cm).";
     if (weight < 30 || weight > 250) return "Poids incohérent (30–250 kg).";
-    if (isNaN(deficit) || deficit < 0 || deficit > 2000)
-      return "Déficit entre 0 et 2000 kcal.";
+    if (form.mode === "deficit") {
+      if (isNaN(deficit) || deficit < 0 || deficit > 2000)
+        return "Déficit entre 0 et 2000 kcal.";
+    }
+    if (form.mode === "goal") {
+      if (!form.goalKg || !form.goalDate)
+        return "Objectif incomplet (kg + date).";
+      const kg = Number(form.goalKg);
+      const target = new Date(form.goalDate);
+      if (isNaN(kg) || kg <= 0) return "Objectif: kg invalide.";
+      if (isNaN(target.getTime())) return "Objectif: date invalide.";
+      if (target.getTime() <= Date.now()) return "Objectif: date passée.";
+    }
     return null;
   }
 
@@ -153,11 +200,16 @@ export default function Home() {
 
       if (form.save && FIREBASE_AVAILABLE && db) {
         const user = await ensureAnonAuth();
-        const deficit = Math.max(0, Math.min(2000, Number(form.deficit || 0)));
+        const deficit =
+          form.mode === "deficit"
+            ? Math.max(0, Math.min(2000, Number(form.deficit || 0)))
+            : goalPlan?.dailyDeficit ?? 0;
         await addDoc(collection(db, "tdee_results"), {
           uid: user.uid,
           ...payload,
           deficit,
+          goalKg: form.mode === "goal" ? Number(form.goalKg) : null,
+          goalDate: form.mode === "goal" ? form.goalDate : null,
           bmr: calc.bmr,
           tdee: calc.tdee,
           target: Math.max(0, Math.round(calc.tdee - deficit)),
@@ -212,6 +264,37 @@ export default function Home() {
         </h1>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-6" noValidate>
+          {/* Mode */}
+          <div>
+            <span className="block text-sm text-slate-400 mb-2">Mode</span>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  { value: "deficit", label: "Déficit manuel" },
+                  { value: "goal", label: "Objectif par date" },
+                ] as const
+              ).map((m) => {
+                const active = form.mode === m.value;
+                return (
+                  <button
+                    key={m.value}
+                    type="button"
+                    onClick={() => onChange("mode", m.value)}
+                    className={[
+                      "rounded-2xl px-4 py-3 text-base font-medium border transition",
+                      active
+                        ? "bg-sky-500 text-white border-sky-500 shadow-sm"
+                        : "bg-[#0F1A2C] text-slate-100 border-[#1B2A44] hover:border-slate-500/40",
+                    ].join(" ")}
+                    aria-pressed={active}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Sexe */}
           <div>
             <span className="block text-sm text-slate-400 mb-2">Sexe</span>
@@ -296,40 +379,72 @@ export default function Home() {
             />
           </div>
 
-          {/* Déficit calorique */}
-          <div className="rounded-2xl border border-[#1B2A44] bg-[#0F1A2C] p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-slate-300">Déficit calorique</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={0}
-                  max={2000}
-                  step={10}
-                  value={form.deficit}
-                  onChange={(e) => onChange("deficit", e.target.value)}
-                  className="w-24 rounded-lg px-2 py-1 text-right bg-[#0C1626] border border-[#1B2A44] focus:outline-none focus:ring-2 focus:ring-sky-600"
-                />
-                <span className="text-sm text-slate-400">kcal/j</span>
+          {form.mode === "deficit" ? (
+            <div className="rounded-2xl border border-[#1B2A44] bg-[#0F1A2C] p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-slate-300">
+                  Déficit calorique
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={2000}
+                    step={10}
+                    value={form.deficit}
+                    onChange={(e) => onChange("deficit", e.target.value)}
+                    className="w-24 rounded-lg px-2 py-1 text-right bg-[#0C1626] border border-[#1B2A44] focus:outline-none focus:ring-2 focus:ring-sky-600"
+                  />
+                  <span className="text-sm text-slate-400">kcal/j</span>
+                </div>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={2000}
+                step={50}
+                value={Number(form.deficit || 0)}
+                onChange={(e) =>
+                  onChange("deficit", String(Number(e.target.value)))
+                }
+                className="w-full accent-sky-500"
+              />
+              <div className="flex justify-between text-xs text-slate-500 mt-1">
+                <span>0</span>
+                <span>1000</span>
+                <span>2000</span>
               </div>
             </div>
-            <input
-              type="range"
-              min={0}
-              max={2000}
-              step={50}
-              value={Number(form.deficit || 0)}
-              onChange={(e) =>
-                onChange("deficit", String(Number(e.target.value)))
-              }
-              className="w-full accent-sky-500"
-            />
-            <div className="flex justify-between text-xs text-slate-500 mt-1">
-              <span>0</span>
-              <span>1000</span>
-              <span>2000</span>
+          ) : (
+            <div className="rounded-2xl border border-[#1B2A44] bg-[#0F1A2C] p-4">
+              <div className="text-sm text-slate-300 mb-3">
+                Objectif: perdre X kg avant une date
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <LabeledNumber
+                  label="Objectif"
+                  unit="kg"
+                  min={0}
+                  max={200}
+                  placeholder="2"
+                  value={form.goalKg}
+                  onChange={(v) => onChange("goalKg", v)}
+                />
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm text-slate-400">Date butoir</span>
+                  <input
+                    type="date"
+                    value={form.goalDate}
+                    onChange={(e) => onChange("goalDate", e.target.value)}
+                    className="w-full rounded-xl border border-[#1B2A44] bg-[#0F1A2C] text-slate-100 p-3 focus:outline-none focus:ring-2 focus:ring-sky-600"
+                  />
+                </label>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                Calcul basé sur 7700 kcal par kg.
+              </p>
             </div>
-          </div>
+          )}
 
           {/* Options “sans BDD” */}
           <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -384,20 +499,25 @@ export default function Home() {
                 big
               />
               <Stat
-                label="Déficit choisi"
-                value={`${Math.max(
-                  0,
-                  Math.min(2000, Number(form.deficit || 0))
-                )} kcal/j`}
-              />
-              <Stat
-                label="Objectif (TDEE − déficit)"
+                label="Objectif"
                 value={
                   targetCalories !== null ? `${targetCalories} kcal/j` : "—"
                 }
                 big
               />
             </div>
+            {form.mode === "deficit" && (
+              <p className="text-xs text-slate-400 mt-2">
+                Déficit choisi:{" "}
+                {Math.max(0, Math.min(2000, Number(form.deficit || 0)))} kcal/j.
+              </p>
+            )}
+            {form.mode === "goal" && goalPlan && (
+              <p className="text-xs text-slate-400 mt-2">
+                Pour {form.goalKg} kg en {goalPlan.days} jours: déficit ≈{" "}
+                {goalPlan.dailyDeficit} kcal/j.
+              </p>
+            )}
             {targetCalories !== null && targetCalories < 1200 && (
               <p className="text-xs text-amber-300 mt-3">
                 ⚠️ Objectif très bas. Vérifie que cela reste adapté à toi.
